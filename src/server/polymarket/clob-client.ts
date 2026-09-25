@@ -175,7 +175,8 @@ class PolymarketClientManager {
   }
 
   /**
-   * Submit an order to Polymarket CLOB (or simulate in DRY_RUN)
+   * Submit an order to Polymarket CLOB (or simulate in DRY_RUN).
+   * Provide either amountUsd (shares = amountUsd / price) or sizeShares (exact share count).
    */
   public async submitOrder(params: {
     conditionalOrderId: string;
@@ -185,11 +186,19 @@ class PolymarketClientManager {
     tokenId: string;
     side: OrderSide;
     price: number;
-    amountUsd: number;
+    amountUsd?: number;
+    sizeShares?: number;
   }): Promise<RealOrder> {
-    const { conditionalOrderId, marketId, marketSlug, outcome, tokenId, side, price, amountUsd } = params;
+    const { conditionalOrderId, marketId, marketSlug, outcome, tokenId, side, price } = params;
     const now = Date.now();
-    const shares = parseFloat((amountUsd / price).toFixed(4));
+    const shares =
+      params.sizeShares !== undefined
+        ? parseFloat(params.sizeShares.toFixed(4))
+        : parseFloat(((params.amountUsd || 0) / price).toFixed(4));
+    const amountUsd =
+      params.amountUsd !== undefined
+        ? params.amountUsd
+        : parseFloat((shares * price).toFixed(4));
     const internalId = `ro_${now}_${Math.random().toString(36).substring(2, 6)}`;
 
     // -------------------------------------------------------------
@@ -314,6 +323,45 @@ class PolymarketClientManager {
       const errorMsg = err?.message || String(err);
       await eventBus.emitLog('ORDER', 'error', `Polymarket CLOB rejected order: ${errorMsg}`);
       throw new Error(`Polymarket order failed: ${errorMsg}`);
+    }
+  }
+
+  /**
+   * Fetch remote order status from Polymarket CLOB (LIVE only).
+   * Returns null in DRY_RUN or if the client/order is unavailable.
+   */
+  public async fetchRemoteOrderStatus(
+    polymarketOrderId: string
+  ): Promise<{ status: RealOrder['status']; filledSize: number; averageFillPrice: number } | null> {
+    if (this.tradingMode === 'DRY_RUN' || polymarketOrderId.startsWith('pm_dry_')) {
+      return null;
+    }
+    if (!this.clobClient) return null;
+
+    try {
+      const remote = await this.clobClient.getOrder(polymarketOrderId);
+      if (!remote) return null;
+
+      const sizeMatched = parseFloat(String(remote.size_matched || '0'));
+      const originalSize = parseFloat(String(remote.original_size || '0'));
+      const remoteStatus = String(remote.status || '').toUpperCase();
+
+      let status: RealOrder['status'] = 'OPEN';
+      if (remoteStatus.includes('CANCEL')) status = 'CANCELLED';
+      else if (remoteStatus.includes('EXPIRE')) status = 'EXPIRED';
+      else if (remoteStatus.includes('REJECT')) status = 'REJECTED';
+      else if (sizeMatched > 0 && originalSize > 0 && sizeMatched >= originalSize * 0.999) status = 'FILLED';
+      else if (sizeMatched > 0) status = 'PARTIALLY_FILLED';
+
+      const price = parseFloat(String(remote.price || remote.associate_trades?.[0]?.price || '0'));
+
+      return {
+        status,
+        filledSize: sizeMatched,
+        averageFillPrice: price,
+      };
+    } catch {
+      return null;
     }
   }
 

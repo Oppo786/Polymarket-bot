@@ -198,6 +198,7 @@ export default function App() {
     triggerSource: TriggerSource;
     triggerDirection: TriggerDirection;
     size: number;
+    takeProfitPrice?: number;
   }) => {
     const res = await fetch('/api/orders/conditional', {
       method: 'POST',

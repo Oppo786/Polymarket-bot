@@ -18,13 +18,15 @@ import {
   OutcomeType,
   OrderSide,
   Btc5mMarket,
+  RealOrder,
 } from '../types.js';
 import {
   insertConditionalOrder,
   updateConditionalOrderStatus,
   getWaitingConditionalOrders,
   getConditionalOrders,
-  persistDb,
+  getRealOrders,
+  updateRealOrderStatus,
 } from '../database/db.js';
 import { polymarketClient } from '../polymarket/clob-client.js';
 import { eventBus } from '../events/event-bus.js';
@@ -33,6 +35,7 @@ import { marketDiscovery } from '../market/market-discovery.js';
 class TriggerEngine {
   // In-memory mutex locks to prevent race conditions across rapid WebSocket price ticks
   private executingLocks: Set<string> = new Set();
+  private takeProfitLocks: Set<string> = new Set();
   private isRunning: boolean = false;
 
   public async start(): Promise<void> {
@@ -101,6 +104,7 @@ class TriggerEngine {
     triggerDirection?: TriggerDirection;
     sizeUsd: number;
     currentPrice: number;
+    takeProfitPrice?: number;
   }): Promise<ConditionalOrder> {
     const {
       market,
@@ -111,6 +115,7 @@ class TriggerEngine {
       triggerSource = 'LAST_TRADE',
       sizeUsd,
       currentPrice,
+      takeProfitPrice,
     } = params;
 
     // Validation
@@ -122,6 +127,14 @@ class TriggerEngine {
     }
     if (sizeUsd <= 0) {
       throw new Error(`Invalid size $${sizeUsd}. Must be greater than 0.`);
+    }
+    if (takeProfitPrice !== undefined && takeProfitPrice !== null) {
+      if (side !== 'BUY') {
+        throw new Error('Take-profit price is only supported on BUY orders.');
+      }
+      if (takeProfitPrice <= 0 || takeProfitPrice >= 1.0) {
+        throw new Error(`Invalid take-profit price $${takeProfitPrice}. Must be between 0.01 and 0.99`);
+      }
     }
 
     // Determine direction if not provided
@@ -145,6 +158,7 @@ class TriggerEngine {
       orderPrice,
       size: sizeUsd,
       shares,
+      takeProfitPrice: takeProfitPrice || undefined,
       status: 'WAITING_FOR_TRIGGER',
       tradingMode,
       initialPriceAtCreation: currentPrice,
@@ -167,6 +181,13 @@ class TriggerEngine {
       'info',
       `Waiting for trigger: Price ${directionOperator} $${triggerPrice.toFixed(2)} (Source: ${triggerSource})`
     );
+    if (order.takeProfitPrice) {
+      await eventBus.emitLog(
+        'ORDER',
+        'info',
+        `Take-profit armed at $${order.takeProfitPrice.toFixed(2)} — Limit Sell will auto-place after BUY fill.`
+      );
+    }
 
     eventBus.broadcastSse('conditional_order_created', order);
 
@@ -359,6 +380,20 @@ class TriggerEngine {
         polymarketOrderId: realOrder.polymarketOrderId,
       });
       eventBus.broadcastSse('real_order_created', realOrder);
+
+      // Step 6b: Take-profit Limit Sell after BUY fill
+      if (order.side === 'BUY' && order.takeProfitPrice) {
+        const filledOrder: ConditionalOrder = {
+          ...order,
+          status: finalStatus,
+          realOrderId: realOrder.id,
+          polymarketOrderId: realOrder.polymarketOrderId,
+        };
+        if (realOrder.status === 'FILLED' && realOrder.filledSize > 0) {
+          await this.placeTakeProfitSell(filledOrder, realOrder);
+        }
+        // LIVE buys may remain OPEN — reconciler will place TP once filled
+      }
     } catch (err: any) {
       const errorMsg = err?.message || String(err);
       await updateConditionalOrderStatus(order.id, 'FAILED', {
@@ -386,6 +421,150 @@ class TriggerEngine {
         await this.expireOrder(order, 'Market expired before trigger.');
       }
     }
+  }
+
+  /**
+   * After a BUY fills, place a Limit Sell at the take-profit price for the exact filled share amount.
+   * Idempotent: skips if take-profit already placed or another placement is in flight.
+   */
+  public async placeTakeProfitSell(
+    conditionalOrder: ConditionalOrder,
+    filledBuy: RealOrder
+  ): Promise<RealOrder | null> {
+    if (!conditionalOrder.takeProfitPrice) return null;
+    if (conditionalOrder.side !== 'BUY') return null;
+    if (conditionalOrder.takeProfitOrderId) return null;
+    if (filledBuy.filledSize <= 0) return null;
+
+    if (this.takeProfitLocks.has(conditionalOrder.id)) return null;
+    this.takeProfitLocks.add(conditionalOrder.id);
+
+    try {
+      // Re-check DB for idempotency (e.g. restart / concurrent reconciler)
+      const freshOrders = await getConditionalOrders();
+      const fresh = freshOrders.find((o) => o.id === conditionalOrder.id);
+      if (!fresh || fresh.takeProfitOrderId || !fresh.takeProfitPrice) {
+        return null;
+      }
+
+      const currentMarket = marketDiscovery.getCurrentMarket();
+      const tokenId =
+        conditionalOrder.outcome === 'UP'
+          ? currentMarket?.upTokenId || filledBuy.tokenId
+          : currentMarket?.downTokenId || filledBuy.tokenId;
+
+      const filledShares = filledBuy.filledSize;
+      const tpPrice = fresh.takeProfitPrice;
+
+      await eventBus.emitLog(
+        'ORDER',
+        'info',
+        `Placing take-profit Limit Sell for ${conditionalOrder.id}: ${filledShares} shares @ $${tpPrice.toFixed(2)}`
+      );
+
+      const tpOrder = await polymarketClient.submitOrder({
+        conditionalOrderId: conditionalOrder.id,
+        marketId: conditionalOrder.marketId,
+        marketSlug: conditionalOrder.marketSlug,
+        outcome: conditionalOrder.outcome,
+        tokenId,
+        side: 'SELL',
+        price: tpPrice,
+        sizeShares: filledShares,
+      });
+
+      await updateConditionalOrderStatus(conditionalOrder.id, fresh.status, {
+        takeProfitOrderId: tpOrder.id,
+      });
+
+      await eventBus.emitLog(
+        'ORDER',
+        'success',
+        `Take-profit Limit Sell placed [${tpOrder.polymarketOrderId}]: SELL ${conditionalOrder.outcome} ${filledShares} shs @ $${tpPrice.toFixed(2)}`
+      );
+
+      eventBus.broadcastSse('real_order_created', tpOrder);
+      eventBus.broadcastSse('conditional_order_updated', {
+        id: conditionalOrder.id,
+        takeProfitOrderId: tpOrder.id,
+      });
+
+      return tpOrder;
+    } catch (err: any) {
+      const errorMsg = err?.message || String(err);
+      await eventBus.emitLog(
+        'ORDER',
+        'error',
+        `Take-profit Limit Sell failed for ${conditionalOrder.id}: ${errorMsg}`
+      );
+      return null;
+    } finally {
+      this.takeProfitLocks.delete(conditionalOrder.id);
+    }
+  }
+
+  /**
+   * Check OPEN BUY orders that have a take-profit target but no TP sell yet.
+   * Used by the reconciler (startup + periodic) for LIVE fills that land after submission.
+   */
+  public async reconcilePendingTakeProfits(): Promise<number> {
+    const orders = await getConditionalOrders();
+    const realOrders = await getRealOrders();
+    let placed = 0;
+
+    const pending = orders.filter(
+      (o) =>
+        o.side === 'BUY' &&
+        o.takeProfitPrice &&
+        !o.takeProfitOrderId &&
+        o.polymarketOrderId &&
+        (o.status === 'OPEN' || o.status === 'FILLED' || o.status === 'PARTIALLY_FILLED')
+    );
+
+    for (const order of pending) {
+      let buyReal = realOrders.find(
+        (r) =>
+          r.id === order.realOrderId ||
+          r.polymarketOrderId === order.polymarketOrderId
+      );
+      if (!buyReal) continue;
+
+      // LIVE: refresh fill status from Polymarket
+      if (buyReal.status !== 'FILLED' && order.polymarketOrderId) {
+        const remote = await polymarketClient.fetchRemoteOrderStatus(order.polymarketOrderId);
+        if (remote && (remote.status === 'FILLED' || remote.status === 'PARTIALLY_FILLED')) {
+          await updateRealOrderStatus(
+            order.polymarketOrderId,
+            remote.status,
+            remote.filledSize,
+            remote.averageFillPrice
+          );
+          buyReal = {
+            ...buyReal,
+            status: remote.status,
+            filledSize: remote.filledSize,
+            averageFillPrice: remote.averageFillPrice,
+          };
+          if (remote.status === 'FILLED') {
+            await updateConditionalOrderStatus(order.id, 'FILLED');
+            eventBus.broadcastSse('conditional_order_updated', {
+              id: order.id,
+              status: 'FILLED',
+            });
+          }
+        }
+      }
+
+      if (buyReal.filledSize > 0 && (buyReal.status === 'FILLED' || buyReal.status === 'PARTIALLY_FILLED')) {
+        // Only auto-place TP on full fill to match "exact filled amount" of the completed buy
+        if (buyReal.status === 'FILLED') {
+          const result = await this.placeTakeProfitSell(order, buyReal);
+          if (result) placed += 1;
+        }
+      }
+    }
+
+    return placed;
   }
 }
 

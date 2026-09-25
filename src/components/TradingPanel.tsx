@@ -23,6 +23,7 @@ interface TradingPanelProps {
     triggerSource: TriggerSource;
     triggerDirection: TriggerDirection;
     size: number;
+    takeProfitPrice?: number;
   }) => Promise<void>;
 }
 
@@ -36,6 +37,7 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
   const [side, setSide] = useState<OrderSide>('BUY');
   const [triggerPrice, setTriggerPrice] = useState<string>('0.90');
   const [orderPrice, setOrderPrice] = useState<string>('0.90');
+  const [takeProfitPrice, setTakeProfitPrice] = useState<string>('');
   const [triggerSource, setTriggerSource] = useState<TriggerSource>('BEST_ASK');
   const [size, setSize] = useState<string>('5');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -68,6 +70,7 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
   const numTrigger = parseFloat(triggerPrice) || 0.50;
   const numOrder = parseFloat(orderPrice) || 0.50;
   const numSize = parseFloat(size) || 5;
+  const numTakeProfit = takeProfitPrice.trim() === '' ? undefined : parseFloat(takeProfitPrice);
 
   // Intelligent Direction Determination
   // If triggerPrice >= currentPrice -> ABOVE_OR_EQUAL
@@ -93,6 +96,12 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
       setErrorMsg('Size must be greater than $0.00');
       return;
     }
+    if (side === 'BUY' && numTakeProfit !== undefined) {
+      if (Number.isNaN(numTakeProfit) || numTakeProfit <= 0 || numTakeProfit >= 1.0) {
+        setErrorMsg('Take Profit Price must be between $0.01 and $0.99');
+        return;
+      }
+    }
 
     setShowConfirmModal(true);
   };
@@ -109,6 +118,9 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
         triggerSource,
         triggerDirection: inferredDirection,
         size: numSize,
+        ...(side === 'BUY' && numTakeProfit !== undefined
+          ? { takeProfitPrice: numTakeProfit }
+          : {}),
       });
       setShowConfirmModal(false);
     } catch (err: any) {
@@ -317,6 +329,42 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
             </div>
           </div>
 
+          {/* Take Profit (BUY only) */}
+          {side === 'BUY' && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[11px] uppercase tracking-wider text-zinc-400 font-bold">
+                  Take Profit Price <span className="text-zinc-500 font-normal normal-case">(optional)</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setTakeProfitPrice(String(bestBidPrice))}
+                  className="text-[10px] text-emerald-400/90 hover:text-emerald-300 font-mono underline decoration-dotted"
+                  title="Click to fill with current Best Bid"
+                >
+                  Best Bid: {formatDollar(bestBidPrice)} ({formatCents(bestBidPrice)})
+                </button>
+              </div>
+              <div className="relative">
+                <span className="absolute left-3 top-2 text-zinc-500">$</span>
+                <input
+                  id="input-take-profit-price"
+                  type="number"
+                  step="any"
+                  min="0.001"
+                  max="0.999"
+                  value={takeProfitPrice}
+                  onChange={(e) => setTakeProfitPrice(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded py-2 pl-7 pr-3 text-zinc-100 font-bold focus:border-emerald-400 focus:outline-none"
+                  placeholder="Leave blank to skip"
+                />
+              </div>
+              <p className="mt-1 text-[10px] text-zinc-500 font-sans">
+                After the BUY fills, a Limit Sell is placed automatically for the filled shares at this price.
+              </p>
+            </div>
+          )}
+
           {/* Quick Size Preset Chips */}
           <div className="flex items-center gap-1.5 pt-1">
             <span className="text-[10px] text-zinc-400 mr-1">Presets:</span>
@@ -404,6 +452,14 @@ export const TradingPanel: React.FC<TradingPanelProps> = ({
                 <span className="text-zinc-400">Amount:</span>
                 <span className="font-bold text-zinc-200">${numSize.toFixed(2)}</span>
               </div>
+              {side === 'BUY' && numTakeProfit !== undefined && !Number.isNaN(numTakeProfit) && (
+                <div className="flex justify-between">
+                  <span className="text-zinc-400">Take Profit:</span>
+                  <span className="font-bold text-emerald-400">
+                    SELL @ ${numTakeProfit.toFixed(2)} after fill
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between border-t border-zinc-800/80 pt-2">
                 <span className="text-zinc-400">Market Expires:</span>
                 <span className="font-bold text-zinc-400">{expiryTimeFormatted}</span>

@@ -61,6 +61,7 @@ async function main() {
       order_price REAL,
       size REAL,
       shares REAL,
+      take_profit_price REAL,
       status TEXT,
       trading_mode TEXT,
       initial_price_at_creation REAL,
@@ -68,6 +69,7 @@ async function main() {
       triggered_at INTEGER,
       real_order_id TEXT,
       polymarket_order_id TEXT,
+      take_profit_order_id TEXT,
       failure_reason TEXT,
       created_at INTEGER,
       updated_at INTEGER

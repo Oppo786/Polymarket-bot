@@ -109,6 +109,7 @@ export interface ConditionalOrder {
   orderPrice: number;
   size: number; // in USD (or shares)
   shares: number; // computed shares = size / orderPrice
+  takeProfitPrice?: number; // Optional sell target after BUY fill
   status: ConditionalOrderStatus;
   tradingMode: TradingMode;
   initialPriceAtCreation: number;
@@ -116,6 +117,7 @@ export interface ConditionalOrder {
   triggeredAt?: number;
   realOrderId?: string;
   polymarketOrderId?: string;
+  takeProfitOrderId?: string; // Linked take-profit Limit Sell real order id
   failureReason?: string;
   createdAt: number;
   updatedAt: number;

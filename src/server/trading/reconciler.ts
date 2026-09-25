@@ -1,16 +1,18 @@
 /**
  * System Restart Recovery & Order Reconciler
- * Automatically reconciles local database states with Polymarket CLOB after container/server restarts
+ * Automatically reconciles local database states with Polymarket CLOB after container/server restarts.
+ * Also periodically checks OPEN BUY fills so take-profit Limit Sells can be placed.
  */
 
-import { getRealOrders, updateRealOrderStatus, getWaitingConditionalOrders } from '../database/db.js';
+import { getRealOrders, getWaitingConditionalOrders } from '../database/db.js';
 import { marketDiscovery } from '../market/market-discovery.js';
 import { clobWebSocket } from '../polymarket/clob-websocket.js';
 import { triggerEngine } from './trigger-engine.js';
 import { eventBus } from '../events/event-bus.js';
-import { polymarketClient } from '../polymarket/clob-client.js';
 
 class ReconcilerService {
+  private takeProfitInterval: NodeJS.Timeout | null = null;
+
   public async reconcileOnStartup(): Promise<void> {
     await eventBus.emitLog('SYSTEM', 'info', 'Starting system restart recovery & order reconciliation...');
 
@@ -39,11 +41,33 @@ class ReconcilerService {
     const localRealOrders = await getRealOrders();
     const openLocalOrders = localRealOrders.filter((o) => o.status === 'OPEN' || o.status === 'PENDING');
 
+    // 5. Place any take-profit sells for BUYs that filled while we were down
+    const tpPlaced = await triggerEngine.reconcilePendingTakeProfits();
+
     await eventBus.emitLog(
       'SYSTEM',
       'info',
-      `Reconciled ${pendingOrders.length} pending conditional orders and ${openLocalOrders.length} open real orders.`
+      `Reconciled ${pendingOrders.length} pending conditional orders, ${openLocalOrders.length} open real orders, ${tpPlaced} take-profit sell(s) placed.`
     );
+
+    this.startTakeProfitPolling();
+  }
+
+  /** Poll LIVE open BUY fills so take-profit Limit Sells fire promptly after fill. */
+  private startTakeProfitPolling(): void {
+    if (this.takeProfitInterval) return;
+    this.takeProfitInterval = setInterval(() => {
+      triggerEngine.reconcilePendingTakeProfits().catch((err) => {
+        console.error('[Reconciler] Take-profit poll error:', err);
+      });
+    }, 5000);
+  }
+
+  public stop(): void {
+    if (this.takeProfitInterval) {
+      clearInterval(this.takeProfitInterval);
+      this.takeProfitInterval = null;
+    }
   }
 }
 

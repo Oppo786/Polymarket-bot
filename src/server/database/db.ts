@@ -44,8 +44,26 @@ export async function getDb(): Promise<Database> {
   }
 
   initTables(db);
+  migrateSchema(db);
   persistDb();
   return db;
+}
+
+/** Additive migrations for existing SQLite files (CREATE TABLE IF NOT EXISTS won't alter columns). */
+function migrateSchema(database: Database): void {
+  const columns = database.exec(`PRAGMA table_info(conditional_orders);`);
+  const existing = new Set<string>();
+  if (columns.length > 0) {
+    for (const row of columns[0].values) {
+      existing.add(String(row[1]));
+    }
+  }
+  if (!existing.has('take_profit_price')) {
+    database.run(`ALTER TABLE conditional_orders ADD COLUMN take_profit_price REAL;`);
+  }
+  if (!existing.has('take_profit_order_id')) {
+    database.run(`ALTER TABLE conditional_orders ADD COLUMN take_profit_order_id TEXT;`);
+  }
 }
 
 export function persistDb(): void {
@@ -92,6 +110,7 @@ function initTables(database: Database): void {
       order_price REAL,
       size REAL,
       shares REAL,
+      take_profit_price REAL,
       status TEXT,
       trading_mode TEXT,
       initial_price_at_creation REAL,
@@ -99,6 +118,7 @@ function initTables(database: Database): void {
       triggered_at INTEGER,
       real_order_id TEXT,
       polymarket_order_id TEXT,
+      take_profit_order_id TEXT,
       failure_reason TEXT,
       created_at INTEGER,
       updated_at INTEGER
@@ -259,10 +279,10 @@ export async function insertConditionalOrder(order: ConditionalOrder): Promise<v
   database.run(
     `INSERT INTO conditional_orders (
       id, market_id, market_slug, outcome, side, trigger_price, trigger_direction,
-      trigger_source, order_price, size, shares, status, trading_mode,
+      trigger_source, order_price, size, shares, take_profit_price, status, trading_mode,
       initial_price_at_creation, triggered_price, triggered_at, real_order_id,
-      polymarket_order_id, failure_reason, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      polymarket_order_id, take_profit_order_id, failure_reason, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       order.id,
       order.marketId,
@@ -275,6 +295,7 @@ export async function insertConditionalOrder(order: ConditionalOrder): Promise<v
       order.orderPrice,
       order.size,
       order.shares,
+      order.takeProfitPrice ?? null,
       order.status,
       order.tradingMode,
       order.initialPriceAtCreation,
@@ -282,6 +303,7 @@ export async function insertConditionalOrder(order: ConditionalOrder): Promise<v
       order.triggeredAt || null,
       order.realOrderId || null,
       order.polymarketOrderId || null,
+      order.takeProfitOrderId || null,
       order.failureReason || null,
       order.createdAt,
       order.updatedAt,
@@ -319,6 +341,10 @@ export async function updateConditionalOrderStatus(
   if (extra?.failureReason !== undefined) {
     query += `, failure_reason = ?`;
     params.push(extra.failureReason);
+  }
+  if (extra?.takeProfitOrderId !== undefined) {
+    query += `, take_profit_order_id = ?`;
+    params.push(extra.takeProfitOrderId);
   }
 
   query += ` WHERE id = ?`;
@@ -367,6 +393,7 @@ export async function getConditionalOrders(filter?: {
       orderPrice: row.order_price as number,
       size: row.size as number,
       shares: row.shares as number,
+      takeProfitPrice: (row.take_profit_price as number) || undefined,
       status: row.status as any,
       tradingMode: row.trading_mode as any,
       initialPriceAtCreation: row.initial_price_at_creation as number,
@@ -374,6 +401,7 @@ export async function getConditionalOrders(filter?: {
       triggeredAt: (row.triggered_at as number) || undefined,
       realOrderId: (row.real_order_id as string) || undefined,
       polymarketOrderId: (row.polymarket_order_id as string) || undefined,
+      takeProfitOrderId: (row.take_profit_order_id as string) || undefined,
       failureReason: (row.failure_reason as string) || undefined,
       createdAt: row.created_at as number,
       updatedAt: row.updated_at as number,

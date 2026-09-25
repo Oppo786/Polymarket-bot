@@ -98,6 +98,7 @@ export const ConditionalOrdersTable: React.FC<ConditionalOrdersTableProps> = ({
               <th className="py-2 px-2">Current</th>
               <th className="py-2 px-2">Trigger Price</th>
               <th className="py-2 px-2">Order Price</th>
+              <th className="py-2 px-2">Take Profit</th>
               <th className="py-2 px-2">Source</th>
               <th className="py-2 px-2">Amount</th>
               <th className="py-2 px-2">Status</th>
@@ -108,7 +109,7 @@ export const ConditionalOrdersTable: React.FC<ConditionalOrdersTableProps> = ({
           <tbody className="divide-y divide-zinc-800/60">
             {orders.length === 0 ? (
               <tr>
-                <td colSpan={12} className="py-8 text-center text-zinc-400 text-xs">
+                <td colSpan={13} className="py-8 text-center text-zinc-400 text-xs">
                   No conditional orders. Create an order above to begin monitoring.
                 </td>
               </tr>
@@ -168,6 +169,18 @@ export const ConditionalOrdersTable: React.FC<ConditionalOrdersTableProps> = ({
                     </td>
                     <td className="py-2.5 px-2 text-zinc-200">
                       {formatDollar(order.orderPrice)} <span className="text-[10px] text-zinc-400">({formatCents(order.orderPrice)})</span>
+                    </td>
+                    <td className="py-2.5 px-2 text-emerald-400 font-medium">
+                      {order.takeProfitPrice
+                        ? (
+                          <>
+                            {formatDollar(order.takeProfitPrice)}{' '}
+                            <span className="text-[10px] text-emerald-400/80 font-normal">
+                              ({formatCents(order.takeProfitPrice)})
+                            </span>
+                          </>
+                        )
+                        : <span className="text-zinc-600">—</span>}
                     </td>
                     <td className="py-2.5 px-2 text-[10px] text-zinc-400">
                       {order.triggerSource.replace('_', ' ')}

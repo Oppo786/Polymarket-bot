@@ -125,7 +125,7 @@ app.get('/api/orders/conditional', async (req, res) => {
 // IMPORTANT: Sits locally in SQLite until trigger price condition met!
 app.post('/api/orders/conditional', authMiddleware, async (req, res) => {
   try {
-    const { outcome, side, triggerPrice, orderPrice, triggerSource, triggerDirection, size } = req.body;
+    const { outcome, side, triggerPrice, orderPrice, triggerSource, triggerDirection, size, takeProfitPrice } = req.body;
     const currentMarket = marketDiscovery.getCurrentMarket();
     if (!currentMarket) {
       return res.status(400).json({ error: 'No active BTC 5M market currently available.' });
@@ -146,6 +146,10 @@ app.post('/api/orders/conditional', authMiddleware, async (req, res) => {
       triggerDirection,
       sizeUsd: parseFloat(size),
       currentPrice,
+      takeProfitPrice:
+        takeProfitPrice !== undefined && takeProfitPrice !== null && takeProfitPrice !== ''
+          ? parseFloat(takeProfitPrice)
+          : undefined,
     });
 
     res.status(201).json(order);
