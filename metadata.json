@@ -1,0 +1,6 @@
+{
+  "name": "Polymarket BTC 5M Terminal",
+  "description": "Automated BTC 5-minute prediction market trading terminal with custom conditional trigger order engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
